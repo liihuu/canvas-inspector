@@ -10,18 +10,6 @@ pnpm add -D canvas-inspector
 
 工具应该只在开发环境加载，并且要在业务代码第一次调用 `canvas.getContext("2d")` 之前安装。
 
-## 一行接入
-
-Vite 项目可在应用入口最前面动态导入自动入口：
-
-```ts
-if (import.meta.env.DEV) {
-  await import("canvas-inspector/auto");
-}
-```
-
-`auto` 会安装全局探针并在页面底部挂载调试面板。面板关闭后可以通过右下角的 `C2D` 按钮重新打开。
-
 ## 程序化接入
 
 ```ts
@@ -89,7 +77,6 @@ console.table(inspector.getHotspots());
 | `canvas-inspector/core` | `inspectCanvas`、`CanvasInspector`、Canvas 发现 |
 | `canvas-inspector/panel` | 可嵌入的 Shadow DOM 调试面板 |
 | `canvas-inspector/panel.css` | 面板 CSS 资源；面板默认会自动加载 |
-| `canvas-inspector/auto` | 自动安装探针并挂载面板 |
 
 ## 本地开发
 

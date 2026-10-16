@@ -30,11 +30,7 @@
       "types": "./dist/panel.d.ts",
       "import": "./dist/panel.js"
     },
-    "./panel.css": "./dist/panel.css",
-    "./auto": {
-      "types": "./dist/auto.d.ts",
-      "import": "./dist/auto.js"
-    }
+    "./panel.css": "./dist/panel.css"
   },
   "files": [
     "dist",
