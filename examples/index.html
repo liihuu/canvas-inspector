@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="Canvas DevTools TypeScript library example" />
+    <title>Canvas DevTools Example</title>
+  </head>
+  <body>
+    <header class="example-header">
+      <div><span class="eyebrow">HOST APPLICATION</span><h1>Realtime Market Canvas</h1></div>
+      <div class="market-state"><i></i><span>BTC / USD</span><strong id="lastPrice">—</strong></div>
+    </header>
+    <main>
+      <section class="chart-shell">
+        <div class="chart-toolbar"><span>1H</span><span>COINBASE</span><span id="frameLabel">Frame 0</span></div>
+        <canvas id="priceChart" width="1200" height="640" aria-label="K 线图演示"></canvas>
+      </section>
+      <p class="example-note">这个页面只模拟使用 Canvas 的业务项目。底部调试器由库独立挂载，可关闭后通过右下角 C2D 重新打开。</p>
+    </main>
+    <script type="module" src="/main.ts"></script>
+  </body>
+</html>

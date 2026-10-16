@@ -1,0 +1,9 @@
+:root { color-scheme: dark; font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #0d1115; color: #eef2f6; }
+* { box-sizing: border-box; }
+body { margin: 0; min-width: 320px; min-height: 100vh; background: #0d1115; }
+.example-header { display: flex; align-items: end; justify-content: space-between; padding: 26px clamp(18px, 5vw, 70px) 18px; border-bottom: 1px solid #26303a; }
+.eyebrow { color: #6f7e8d; font: 10px ui-monospace, monospace; }.example-header h1 { margin: 5px 0 0; font-size: 24px; letter-spacing: 0; }
+.market-state { display: grid; grid-template-columns: 8px auto; gap: 2px 8px; align-items: center; }.market-state i { width: 7px; height: 7px; border-radius: 50%; background: #2ac59a; }.market-state span { color: #8996a3; font-size: 11px; }.market-state strong { grid-column: 2; font: 18px ui-monospace, monospace; }
+main { padding: 24px clamp(18px, 5vw, 70px) 500px; }.chart-shell { overflow: hidden; border: 1px solid #303b45; border-radius: 6px; background: #11161b; }.chart-toolbar { display: flex; gap: 18px; align-items: center; height: 36px; padding: 0 13px; border-bottom: 1px solid #27313a; color: #8794a0; font: 10px ui-monospace, monospace; }.chart-toolbar span:last-child { margin-left: auto; }
+#priceChart { display: block; width: 100%; height: auto; aspect-ratio: 15 / 8; }.example-note { max-width: 720px; margin: 14px 0; color: #7e8b98; font-size: 12px; }
+@media (max-width: 640px) { .example-header { align-items: center; }.example-header h1 { font-size: 18px; }.market-state { display: none; } main { padding-inline: 12px; } }
