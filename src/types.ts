@@ -88,6 +88,8 @@ export interface InspectorOptions {
   maxFrames?: number
   captureFrameSnapshots?: boolean
   snapshotInterval?: number
+  captureArgs?: boolean
+  captureState?: boolean
   captureStack?: boolean
   slowFrameThreshold?: number
   contextAttributes?: CanvasRenderingContext2DSettings

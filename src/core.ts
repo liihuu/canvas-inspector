@@ -1,3 +1,5 @@
+import { RingBuffer } from './buffer'
+import { subscribeContext } from './hook-manager'
 import type { Bounds, CanvasInspectorEvents, CanvasInteraction, CanvasMetadata, CanvasState, DrawCall, DrawCallCategory, FrameProfile, Hotspot, InspectorOptions, RepeatedDraw } from './types'
 
 const RECORDED_METHODS = new Set([
@@ -18,6 +20,8 @@ const RECORDED_METHODS = new Set([
   'quadraticCurveTo',
   'rect',
   'reset',
+  'resetTransform',
+  'putImageData',
   'restore',
   'rotate',
   'roundRect',
@@ -86,15 +90,15 @@ function serializeArgument(value: unknown): unknown {
   return Object.prototype.toString.call(value).slice(8, -1)
 }
 
-function copyState(context: CanvasRenderingContext2D): CanvasState {
+function copyState(context: CanvasRenderingContext2D, serialize = true): CanvasState {
   const state: Record<string, unknown> = {}
   const record = context as unknown as Record<string, unknown>
   for (const property of TRACKED_PROPERTIES) {
-    state[property] = serializeArgument(record[property])
+    state[property] = serialize ? serializeArgument(record[property]) : record[property]
   }
   const matrix = context.getTransform()
-  state.transform = [matrix.a, matrix.b, matrix.c, matrix.d, matrix.e, matrix.f].map(round)
-  state.lineDash = context.getLineDash().map(round)
+  state.transform = [matrix.a, matrix.b, matrix.c, matrix.d, matrix.e, matrix.f]
+  state.lineDash = context.getLineDash()
   return state as CanvasState
 }
 
@@ -238,8 +242,14 @@ export function discoverCanvases(root: ParentNode = document): CanvasMetadata[] 
 export class CanvasInspector extends EventTarget {
   readonly canvas: HTMLCanvasElement
   readonly context: CanvasRenderingContext2D
-  readonly events: DrawCall[] = []
-  readonly frames: FrameProfile[] = []
+  private readonly eventStore: RingBuffer<DrawCall>
+  private readonly frameStore: RingBuffer<FrameProfile>
+  get events(): DrawCall[] {
+    return this.eventStore.toArray()
+  }
+  get frames(): FrameProfile[] {
+    return this.frameStore.toArray()
+  }
   readonly interactions: CanvasInteraction[] = []
   readonly options: Required<Omit<InspectorOptions, 'contextAttributes' | 'context'>> & Pick<InspectorOptions, 'contextAttributes'>
   enabled = false
@@ -247,8 +257,15 @@ export class CanvasInspector extends EventTarget {
   frame = 0
 
   private readonly rawContext: CanvasRenderingContext2D
-  private readonly originalGetContext: HTMLCanvasElement['getContext']
+  private unsubscribe: (() => void) | null = null
+  private nextEventIndex = 0
+  private frameCallCount = 0
+  private framePixelCalls = 0
+  private frameMethodCounts: Record<string, number> = {}
+  private readonly replayStates = new WeakMap<DrawCall, CanvasState>()
   private frameStart = performance.now()
+  private previousFrameStart: number | null = null
+  private frameInterval = 0
   private frameEventStart = 0
   private frameLabel: string | null = null
   private pathBounds: Bounds | null = null
@@ -258,8 +275,7 @@ export class CanvasInspector extends EventTarget {
   constructor(canvas: HTMLCanvasElement, options: InspectorOptions = {}) {
     super()
     this.canvas = canvas
-    this.originalGetContext = canvas.getContext.bind(canvas) as HTMLCanvasElement['getContext']
-    const rawContext = options.context ?? this.originalGetContext('2d', options.contextAttributes)
+    const rawContext = options.context ?? canvas.getContext('2d', options.contextAttributes)
     if (!(rawContext instanceof CanvasRenderingContext2D)) {
       throw new Error('CanvasInspector supports CanvasRenderingContext2D only')
     }
@@ -269,12 +285,16 @@ export class CanvasInspector extends EventTarget {
       maxFrames: options.maxFrames ?? 180,
       captureFrameSnapshots: options.captureFrameSnapshots ?? true,
       snapshotInterval: Math.max(1, options.snapshotInterval ?? 5),
-      captureStack: options.captureStack ?? true,
+      captureStack: options.captureStack ?? false,
       slowFrameThreshold: options.slowFrameThreshold ?? 16.7,
       patchCanvas: options.patchCanvas ?? true,
-      contextAttributes: options.contextAttributes
+      contextAttributes: options.contextAttributes,
+      captureArgs: options.captureArgs ?? true,
+      captureState: options.captureState ?? true
     }
-    this.context = this.createProxy(rawContext)
+    this.eventStore = new RingBuffer(this.options.maxEvents)
+    this.frameStore = new RingBuffer(this.options.maxFrames)
+    this.context = rawContext
     canvas.dataset.canvasContext = '2d'
   }
 
@@ -288,12 +308,17 @@ export class CanvasInspector extends EventTarget {
     if (this.enabled) {
       return this
     }
+    this.unsubscribe = subscribeContext(this.rawContext, RECORDED_METHODS, (name, args) => {
+      if (!this.enabled || this.paused) {
+        return () => {
+          /* Recording is paused. */
+        }
+      }
+      const state = this.options.captureState ? copyState(this.rawContext) : { transform: [], lineDash: [] }
+      const rawState = this.options.captureState ? copyState(this.rawContext, false) : null
+      return (duration) => this.record(name, args, duration, state, rawState)
+    })
     this.enabled = true
-    if (this.options.patchCanvas) {
-      const proxy = this.context
-      const original = this.originalGetContext
-      this.canvas.getContext = ((type: string, attributes?: unknown) => (type === '2d' ? proxy : original(type as never, attributes as never))) as HTMLCanvasElement['getContext']
-    }
     for (const type of ['pointerdown', 'pointermove', 'pointerup', 'click', 'wheel']) {
       this.canvas.addEventListener(type, this.handlePointer, { passive: true })
     }
@@ -307,9 +332,8 @@ export class CanvasInspector extends EventTarget {
       return this
     }
     this.enabled = false
-    if (this.options.patchCanvas) {
-      this.canvas.getContext = this.originalGetContext
-    }
+    this.unsubscribe?.()
+    this.unsubscribe = null
     for (const type of ['pointerdown', 'pointermove', 'pointerup', 'click', 'wheel']) {
       this.canvas.removeEventListener(type, this.handlePointer)
     }
@@ -323,18 +347,18 @@ export class CanvasInspector extends EventTarget {
   }
 
   beginFrame(label: string | null = null): void {
-    this.frameStart = performance.now()
-    this.frameEventStart = this.events.length
+    const now = performance.now()
+    this.frameInterval = this.previousFrameStart === null ? 0 : now - this.previousFrameStart
+    this.previousFrameStart = now
+    this.frameStart = now
+    this.frameEventStart = this.nextEventIndex
+    this.frameCallCount = this.framePixelCalls = 0
+    this.frameMethodCounts = {}
     this.frameLabel = label
   }
 
   endFrame(): FrameProfile {
     const end = performance.now()
-    const frameEvents = this.events.slice(this.frameEventStart)
-    const methodCounts = frameEvents.reduce<Record<string, number>>((counts, event) => {
-      counts[event.name] = (counts[event.name] ?? 0) + 1
-      return counts
-    }, {})
     const duration = end - this.frameStart
     let snapshot: string | null = null
     if (this.options.captureFrameSnapshots && this.frame % this.options.snapshotInterval === 0) {
@@ -348,27 +372,24 @@ export class CanvasInspector extends EventTarget {
       index: this.frame,
       label: this.frameLabel,
       startEvent: this.frameEventStart,
-      endEvent: Math.max(this.frameEventStart, this.events.length - 1),
+      endEvent: this.nextEventIndex - 1,
       duration: round(duration),
-      fps: round(duration > 0 ? Math.min(999, 1000 / duration) : 0),
-      callCount: frameEvents.length,
-      pixelCalls: frameEvents.filter((event) => PIXEL_METHODS.has(event.name)).length,
+      fps: round(this.frameInterval > 0 ? 1000 / this.frameInterval : 0),
+      callCount: this.frameCallCount,
+      pixelCalls: this.framePixelCalls,
       slow: duration > this.options.slowFrameThreshold,
-      methodCounts,
+      methodCounts: { ...this.frameMethodCounts },
       timestamp: end,
       snapshot
     }
-    this.frames.push(profile)
-    if (this.frames.length > this.options.maxFrames) {
-      this.frames.shift()
-    }
+    this.frameStore.push(profile)
     this.emit('frame', profile)
     this.frame += 1
     return profile
   }
 
   getEvent(index: number): DrawCall | null {
-    return this.events[index] ?? null
+    return this.events.find((event) => event.index === index) ?? null
   }
   getFrame(index: number): FrameProfile | null {
     return this.frames.find((frame) => frame.index === index) ?? null
@@ -407,12 +428,15 @@ export class CanvasInspector extends EventTarget {
   }
 
   clear(): void {
-    this.events.length = 0
-    this.frames.length = 0
+    this.eventStore.clear()
+    this.frameStore.clear()
+    this.nextEventIndex = 0
     this.interactions.length = 0
     this.signatureCounts.clear()
     this.stackCache.clear()
     this.frame = 0
+    this.previousFrameStart = null
+    this.pathBounds = null
     this.beginFrame()
     this.emit('clear', undefined)
   }
@@ -435,30 +459,60 @@ export class CanvasInspector extends EventTarget {
     )
   }
 
-  private createProxy(context: CanvasRenderingContext2D): CanvasRenderingContext2D {
-    return new Proxy(context, {
-      get: (target, property) => {
-        const value = Reflect.get(target, property, target) as unknown
-        if (typeof value !== 'function') {
-          return value
+  /** Replays retained commands into a separate canvas, never into the inspected target. */
+  replayFrame(frameIndex: number, target: HTMLCanvasElement, through = Infinity): { applied: number; warnings: string[] } {
+    if (target === this.canvas) {
+      throw new Error('Replay requires a separate canvas')
+    }
+    const frame = this.getFrame(frameIndex)
+    if (!frame) {
+      throw new Error('Frame is no longer retained')
+    }
+    const commands = this.events.filter((event) => event.frame === frameIndex && event.index <= through)
+    target.width = this.canvas.width
+    target.height = this.canvas.height
+    const context = target.getContext('2d')
+    if (!context) {
+      throw new Error('Replay requires a 2D context')
+    }
+    const warnings = new Set<string>(['Replay starts on a blank canvas; pixels, paths and clips inherited from earlier frames are not restored.'])
+    const retained = this.events.filter((event) => event.frame === frameIndex)
+    if (retained.length < frame.callCount) {
+      warnings.add('Some commands in this frame have been evicted.')
+    }
+    let applied = 0
+    for (const event of commands) {
+      const state = this.replayStates.get(event)
+      if (!state || !this.options.captureArgs) {
+        warnings.add('Replay requires captureArgs and captureState.')
+        break
+      }
+      for (const property of TRACKED_PROPERTIES) {
+        Reflect.set(context, property, state[property])
+      }
+      // Preserve native transform composition; resetting each call changes rasterization precision.
+      if (applied === 0) {
+        context.setTransform(...(state.transform as [number, number, number, number, number, number]))
+      }
+      context.setLineDash(state.lineDash)
+      try {
+        const method = Reflect.get(context, event.name) as (...args: unknown[]) => unknown
+        Reflect.apply(method, context, event.rawArgs)
+        applied += 1
+        if (event.rawArgs.some((arg) => typeof arg === 'object' && arg !== null && !Array.isArray(arg))) {
+          warnings.add('Resource objects are live references; subsequent mutations can affect replay.')
         }
-        return (...args: unknown[]) => {
-          const start = performance.now()
-          const result = (value as (...methodArgs: unknown[]) => unknown).apply(target, args)
-          if (this.enabled && !this.paused && RECORDED_METHODS.has(String(property))) {
-            this.record(String(property), args, performance.now() - start)
-          }
-          return result
-        }
-      },
-      set: (target, property, value) => Reflect.set(target, property, value, target)
-    }) as CanvasRenderingContext2D
+      } catch {
+        warnings.add(`Unable to replay command #${event.index} (${event.name}).`)
+      }
+    }
+    return { applied, warnings: [...warnings] }
   }
 
-  private record(name: string, rawArgs: unknown[], duration: number): void {
+  private record(name: string, rawArgs: unknown[], duration: number, state: CanvasState, rawState: CanvasState | null): void {
     this.pathBounds = updatePathBounds(this.rawContext, name, rawArgs, this.pathBounds)
     const bounds = boundsForCall(this.rawContext, name, rawArgs, this.pathBounds)
-    const args = rawArgs.map(serializeArgument)
+    const args = this.options.captureArgs ? rawArgs.map(serializeArgument) : []
     const signature = PIXEL_METHODS.has(name) ? `${name}:${JSON.stringify(args)}:${JSON.stringify(bounds)}` : null
     const repeated = signature ? (this.signatureCounts.get(signature) ?? 0) + 1 : 0
     if (signature) {
@@ -470,13 +524,13 @@ export class CanvasInspector extends EventTarget {
     }
     const event: DrawCall = {
       id: crypto.randomUUID?.() ?? `${Date.now()}-${this.events.length}`,
-      index: this.events.length,
+      index: this.nextEventIndex++,
       frame: this.frame,
       name,
       category: eventCategory(name),
       args,
-      rawArgs,
-      state: copyState(this.rawContext),
+      rawArgs: this.options.captureArgs ? rawArgs.slice() : [],
+      state,
       bounds,
       duration: round(duration),
       timestamp: round(performance.now()),
@@ -484,12 +538,20 @@ export class CanvasInspector extends EventTarget {
       signature,
       repeated
     }
-    this.events.push(event)
-    if (this.events.length > this.options.maxEvents) {
-      this.events.splice(0, this.events.length - this.options.maxEvents)
-      this.events.forEach((item, index) => {
-        item.index = index
-      })
+    if (rawState) {
+      this.replayStates.set(event, rawState)
+    }
+    this.frameCallCount += 1
+    this.framePixelCalls += PIXEL_METHODS.has(name) ? 1 : 0
+    this.frameMethodCounts[name] = (this.frameMethodCounts[name] ?? 0) + 1
+    const evicted = this.eventStore.push(event)
+    if (evicted?.signature) {
+      const remaining = (this.signatureCounts.get(evicted.signature) ?? 1) - 1
+      if (remaining > 0) {
+        this.signatureCounts.set(evicted.signature, remaining)
+      } else {
+        this.signatureCounts.delete(evicted.signature)
+      }
     }
     this.emit('record', event)
   }
@@ -497,6 +559,9 @@ export class CanvasInspector extends EventTarget {
   private readonly handlePointer = (event: Event): void => {
     const pointer = event as PointerEvent & WheelEvent
     const rect = this.canvas.getBoundingClientRect()
+    if (!rect.width || !rect.height) {
+      return
+    }
     const interaction: CanvasInteraction = {
       type: event.type,
       frame: this.frame,

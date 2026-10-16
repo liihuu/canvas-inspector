@@ -11,8 +11,7 @@ export class CanvasDevtoolsRegistry extends EventTarget {
   readonly options: Required<Pick<InstallOptions, 'autoFrame' | 'observe'>> & InstallOptions
   installed = false
 
-  private originalGetContext: HTMLCanvasElement['getContext'] | null = null
-  private originalRequestAnimationFrame: typeof window.requestAnimationFrame | null = null
+  private readonly subscriptions = new Map<HTMLCanvasElement, () => void>()
   private observer: MutationObserver | null = null
   private updateTimer: number | null = null
 
@@ -30,10 +29,7 @@ export class CanvasDevtoolsRegistry extends EventTarget {
       return this
     }
     this.installed = true
-    this.patchGetContext()
-    if (this.options.autoFrame) {
-      this.patchAnimationFrame()
-    }
+    addRegistry(this)
     if (this.options.observe) {
       this.observeDocument()
     }
@@ -43,23 +39,17 @@ export class CanvasDevtoolsRegistry extends EventTarget {
   }
 
   uninstall(): void {
-    if (!this.installed) {
-      return
-    }
-    if (this.originalGetContext) {
-      HTMLCanvasElement.prototype.getContext = this.originalGetContext
-    }
-    if (this.originalRequestAnimationFrame) {
-      window.requestAnimationFrame = this.originalRequestAnimationFrame
+    if (this.installed) {
+      removeRegistry(this)
     }
     this.observer?.disconnect()
     if (this.updateTimer !== null) {
       window.clearTimeout(this.updateTimer)
+      this.updateTimer = null
     }
-    for (const inspector of this.inspectors.values()) {
-      inspector.stop()
+    for (const canvas of this.inspectors.keys()) {
+      this.detach(canvas)
     }
-    this.inspectors.clear()
     this.installed = false
     this.emitUpdate()
   }
@@ -70,12 +60,16 @@ export class CanvasDevtoolsRegistry extends EventTarget {
     return canvases
   }
 
-  attach(canvas: HTMLCanvasElement, context?: CanvasRenderingContext2D): CanvasInspector {
+  attach(canvas: HTMLCanvasElement, context?: CanvasRenderingContext2D, start = true): CanvasInspector {
     const existing = this.inspectors.get(canvas)
     if (existing) {
       return existing
     }
-    const rawContext = context ?? this.originalGetContext?.call(canvas, '2d', this.options.contextAttributes)
+    const rawContext = context ?? nativeGetContext.call(canvas, '2d', this.options.contextAttributes)
+    const attached = this.inspectors.get(canvas)
+    if (attached) {
+      return attached
+    }
     if (!(rawContext instanceof CanvasRenderingContext2D)) {
       throw new Error('Unable to attach Canvas 2D inspector')
     }
@@ -83,16 +77,37 @@ export class CanvasDevtoolsRegistry extends EventTarget {
       ...this.options,
       context: rawContext,
       patchCanvas: false
-    }).start()
+    })
+    if (start) {
+      inspector.start()
+    }
     this.inspectors.set(canvas, inspector)
     const update = (): void => this.scheduleUpdate()
     inspector.addEventListener('record', update)
     inspector.addEventListener('frame', update)
     inspector.addEventListener('interaction', update)
     inspector.addEventListener('clear', update)
+    this.subscriptions.set(canvas, () => {
+      for (const type of ['record', 'frame', 'interaction', 'clear']) {
+        inspector.removeEventListener(type, update)
+      }
+    })
     this.dispatchEvent(new CustomEvent('canvasadded', { detail: inspector }))
     this.emitUpdate()
     return inspector
+  }
+
+  detach(canvas: HTMLCanvasElement): void {
+    const inspector = this.inspectors.get(canvas)
+    if (!inspector) {
+      return
+    }
+    inspector.stop()
+    this.subscriptions.get(canvas)?.()
+    this.subscriptions.delete(canvas)
+    this.inspectors.delete(canvas)
+    this.dispatchEvent(new CustomEvent('canvasremoved', { detail: inspector }))
+    this.emitUpdate()
   }
 
   getInspector(canvas: HTMLCanvasElement): CanvasInspector | null {
@@ -101,39 +116,6 @@ export class CanvasDevtoolsRegistry extends EventTarget {
 
   snapshot(): RegistrySnapshot {
     return { canvases: discoverCanvases(), inspectors: [...this.inspectors.values()] }
-  }
-
-  private patchGetContext(): void {
-    const registry = this
-    this.originalGetContext = HTMLCanvasElement.prototype.getContext
-    const original = this.originalGetContext
-    HTMLCanvasElement.prototype.getContext = function getContext(this: HTMLCanvasElement, contextId: string, options?: unknown): unknown {
-      const context = original.call(this, contextId as never, options as never) as unknown
-      this.dataset.canvasContext = contextId
-      if (contextId === '2d' && context instanceof CanvasRenderingContext2D && !this.hasAttribute('data-canvas-devtools-internal')) {
-        return registry.attach(this, context).context
-      }
-      return context
-    } as HTMLCanvasElement['getContext']
-  }
-
-  private patchAnimationFrame(): void {
-    this.originalRequestAnimationFrame = window.requestAnimationFrame.bind(window)
-    const original = this.originalRequestAnimationFrame
-    window.requestAnimationFrame = (callback: FrameRequestCallback): number =>
-      original((time) => {
-        const inspectors = [...this.inspectors.values()].filter((inspector) => inspector.enabled && !inspector.paused)
-        for (const inspector of inspectors) {
-          inspector.beginFrame('requestAnimationFrame')
-        }
-        try {
-          callback(time)
-        } finally {
-          for (const inspector of inspectors) {
-            inspector.endFrame()
-          }
-        }
-      })
   }
 
   private observeDocument(): void {
@@ -145,15 +127,10 @@ export class CanvasDevtoolsRegistry extends EventTarget {
             changed = true
           }
         }
-        for (const node of mutation.removedNodes) {
-          if (node instanceof HTMLCanvasElement) {
-            const inspector = this.inspectors.get(node)
-            if (inspector) {
-              inspector.stop()
-              this.inspectors.delete(node)
-              this.dispatchEvent(new CustomEvent('canvasremoved', { detail: inspector }))
-              changed = true
-            }
+        for (const canvas of this.inspectors.keys()) {
+          if (!canvas.isConnected) {
+            this.detach(canvas)
+            changed = true
           }
         }
       }
@@ -184,9 +161,9 @@ let defaultRegistry: CanvasDevtoolsRegistry | null = null
 
 export function installCanvasDevtools(options: InstallOptions = {}): CanvasDevtoolsRegistry {
   if (!defaultRegistry) {
-    defaultRegistry = new CanvasDevtoolsRegistry(options).install()
+    defaultRegistry = new CanvasDevtoolsRegistry(options)
   }
-  return defaultRegistry
+  return defaultRegistry.install()
 }
 
 export function getCanvasDevtools(): CanvasDevtoolsRegistry | null {
@@ -196,4 +173,65 @@ export function getCanvasDevtools(): CanvasDevtoolsRegistry | null {
 export function uninstallCanvasDevtools(): void {
   defaultRegistry?.uninstall()
   defaultRegistry = null
+}
+
+// All registries share one pair of global hooks; the final owner restores descriptors.
+const registries = new Set<CanvasDevtoolsRegistry>()
+const nativeGetContext = function (this: HTMLCanvasElement, type: string, attributes?: unknown): unknown {
+  return this.getContext(type as never, attributes as never)
+}
+let restoreGlobals: (() => void) | null = null
+
+function addRegistry(registry: CanvasDevtoolsRegistry): void {
+  registries.add(registry)
+  if (restoreGlobals) {
+    return
+  }
+  const proto = HTMLCanvasElement.prototype
+  const contextDescriptor = Object.getOwnPropertyDescriptor(proto, 'getContext')!
+  const rafDescriptor = Object.getOwnPropertyDescriptor(window, 'requestAnimationFrame')!
+  const originalGetContext = proto.getContext
+  const originalRaf = window.requestAnimationFrame
+  const getContext = function (this: HTMLCanvasElement, type: string, attributes?: unknown): unknown {
+    const context = originalGetContext.call(this, type as never, attributes as never)
+    this.dataset.canvasContext = type
+    if (type === '2d' && context instanceof CanvasRenderingContext2D && !this.hasAttribute('data-canvas-devtools-internal')) {
+      for (const owner of registries) {
+        owner.attach(this, context)
+      }
+    }
+    return context
+  } as HTMLCanvasElement['getContext']
+  const requestAnimationFrame = (callback: FrameRequestCallback): number =>
+    originalRaf.call(window, (time) => {
+      const inspectors = [...new Set([...registries].filter((owner) => owner.options.autoFrame).flatMap((owner) => [...owner.inspectors.values()]))].filter((inspector) => inspector.enabled && !inspector.paused)
+      for (const inspector of inspectors) {
+        inspector.beginFrame('requestAnimationFrame')
+      }
+      try {
+        callback(time)
+      } finally {
+        for (const inspector of inspectors) {
+          inspector.endFrame()
+        }
+      }
+    })
+  Object.defineProperty(proto, 'getContext', { ...contextDescriptor, value: getContext })
+  Object.defineProperty(window, 'requestAnimationFrame', { ...rafDescriptor, value: requestAnimationFrame })
+  restoreGlobals = () => {
+    if (proto.getContext === getContext) {
+      Object.defineProperty(proto, 'getContext', contextDescriptor)
+    }
+    if (window.requestAnimationFrame === requestAnimationFrame) {
+      Object.defineProperty(window, 'requestAnimationFrame', rafDescriptor)
+    }
+  }
+}
+
+function removeRegistry(registry: CanvasDevtoolsRegistry): void {
+  registries.delete(registry)
+  if (!registries.size) {
+    restoreGlobals?.()
+    restoreGlobals = null
+  }
 }

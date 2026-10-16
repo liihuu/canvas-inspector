@@ -319,8 +319,16 @@ button {
     monospace;
 }
 .render {
-  display: grid;
-  grid-template-rows: 38px minmax(0, 1fr);
+  display: flex;
+  flex-direction: column;
+}
+.render-tools,
+.replay-tools,
+.replay-preview {
+  flex-shrink: 0;
+}
+.render .command-list {
+  flex: 1;
 }
 .render-tools {
   display: grid;
@@ -589,4 +597,36 @@ button {
   .button span {
     display: none;
   }
+}
+
+.replay-tools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid #30343d;
+  flex-wrap: wrap;
+}
+.replay-label {
+  color: #9ba6b8;
+  font-size: 11px;
+}
+.replay-preview {
+  padding: 12px;
+  border-bottom: 1px solid #30343d;
+}
+.replay-preview canvas {
+  display: block;
+  max-width: 100%;
+  max-height: 110px;
+  background: #fff;
+}
+.replay-warning {
+  display: block;
+  margin-top: 8px;
+  color: #c5a56b;
+  font-size: 11px;
+}
+.frame-row.active {
+  background: #273d53;
 }

@@ -55,7 +55,7 @@ export function mountCanvasDevtools(options: MountPanelOptions): CanvasDevtoolsP
         <aside class="sidebar"><div class="section-head"><span>Canvases</span><span data-count="canvas">0</span></div><div class="canvas-list"></div><div class="section-head"><span>Frames</span><span data-count="frame">0</span></div><div class="frame-list"></div></aside>
         <main class="main">
           <section class="view inspector" data-panel="inspector"><div class="toolbar"><div class="identity"><strong>No Canvas</strong><small>等待 2D 上下文</small></div><button class="button active" data-overlay="grid">Grid</button><button class="button active" data-overlay="crosshair">Crosshair</button><button class="button active" data-overlay="bounds">Bounds</button></div><div class="stage"><div class="preview-wrap"><img class="preview" alt="Canvas snapshot"><span class="coordinate">x: — y: —</span></div></div></section>
-          <section class="view render" data-panel="render" hidden><div class="render-tools"><input class="input" type="search" placeholder="搜索方法、参数或堆栈"><select class="select"><option value="all">All calls</option><option value="fill">Fill</option><option value="stroke">Stroke</option><option value="path">Path</option><option value="image">Image</option><option value="transform">Transform</option><option value="state">State</option><option value="clear">Clear</option></select></div><div class="command-list"></div></section>
+          <section class="view render" data-panel="render" hidden><div class="render-tools"><input class="input" type="search" placeholder="搜索方法、参数或堆栈"><select class="select"><option value="all">All calls</option><option value="fill">Fill</option><option value="stroke">Stroke</option><option value="path">Path</option><option value="image">Image</option><option value="transform">Transform</option><option value="state">State</option><option value="clear">Clear</option></select></div><div class="replay-tools"><button class="button" data-action="replay-prev">← Step</button><button class="button" data-action="replay-next">Step →</button><button class="button" data-action="replay-all">Full frame</button><button class="button" data-action="replay-live">Live</button><span class="replay-label">选择左侧帧开始回放</span></div><div class="replay-preview" hidden><canvas data-canvas-devtools-internal></canvas><small class="replay-warning"></small></div><div class="command-list"></div></section>
           <section class="view profiler" data-panel="profiler" hidden><div class="metrics"></div><div class="profile-grid"><article class="card"><h3>调用热点</h3><div class="hotspots"></div></article><article class="card"><h3>重复绘制</h3><div class="repeats"></div></article><article class="card"><h3>交互轨迹</h3><div class="interactions"></div></article><article class="card"><h3>最近慢帧</h3><div class="slow-frames"></div></article></div></section>
         </main>
         <aside class="details"><div class="details-title">Details</div><div class="detail-scroll"></div></aside>
@@ -80,15 +80,20 @@ export function mountCanvasDevtools(options: MountPanelOptions): CanvasDevtoolsP
   const pageOverlay = query<HTMLElement>('.page-overlay')
   let selectedCanvas: HTMLCanvasElement | null = null
   let selectedEvent: DrawCall | null = null
+  let selectedFrame: number | null = null
+  let replayThrough = Infinity
   let view: ViewName = 'inspector'
   let paused = false
   const overlays = { grid: true, crosshair: true, bounds: true }
   let renderQueued = false
+  let renderTimer: number | undefined
+  let destroyed = false
 
   const currentInspector = () => (selectedCanvas ? options.devtools.getInspector(selectedCanvas) : null)
   const currentMetadata = (): CanvasMetadata | null => discoverCanvases().find((item) => item.canvas === selectedCanvas) ?? null
 
   function selectCanvas(canvas: HTMLCanvasElement): void {
+    selectedFrame = null
     selectedCanvas = canvas
     selectedEvent = options.devtools.getInspector(canvas)?.events.at(-1) ?? null
     render()
@@ -112,7 +117,12 @@ export function mountCanvasDevtools(options: MountPanelOptions): CanvasDevtoolsP
     const frames = [...(inspector?.frames ?? [])].reverse()
     query<HTMLElement>('[data-count=frame]').textContent = String(frames.length)
     query<HTMLElement>('.frame-list').innerHTML = frames.length
-      ? frames.map((frame) => `<button class="frame-row ${frame.slow ? 'slow' : ''}"><span>#${frame.index}</span><span class="bar"><i style="--w:${Math.min(100, (frame.duration / 25) * 100)}%"></i></span><span>${frame.duration.toFixed(1)}ms</span></button>`).join('')
+      ? frames
+          .map(
+            (frame) =>
+              `<button data-frame="${frame.index}" class="frame-row ${frame.index === selectedFrame ? 'active' : ''} ${frame.slow ? 'slow' : ''}"><span>#${frame.index}</span><span class="bar"><i style="--w:${Math.min(100, (frame.duration / 25) * 100)}%"></i></span><span>${frame.duration.toFixed(1)}ms</span></button>`
+          )
+          .join('')
       : '<div class="empty">等待帧数据</div>'
   }
 
@@ -126,7 +136,10 @@ export function mountCanvasDevtools(options: MountPanelOptions): CanvasDevtoolsP
       return
     }
     identity.innerHTML = `<strong>#${escapeHtml(metadata.id)}</strong><small>${metadata.width} × ${metadata.height} · CSS ${metadata.cssWidth} × ${metadata.cssHeight} · DPR ${metadata.dpr} · ${metadata.contextType}</small>`
-    const latestSnapshot = inspector?.frames.at(-1)?.snapshot
+    const latestSnapshot = inspector?.frames
+      .slice()
+      .reverse()
+      .find((frame) => frame.snapshot)?.snapshot
     const image = query<HTMLImageElement>('.preview')
     if (latestSnapshot) {
       image.src = latestSnapshot
@@ -148,13 +161,30 @@ export function mountCanvasDevtools(options: MountPanelOptions): CanvasDevtoolsP
     const events = (inspector?.events ?? [])
       .filter((event) => {
         const text = `${event.name} ${event.args.join(' ')} ${event.stack.join(' ')}`.toLowerCase()
-        return (!search || text.includes(search)) && (category === 'all' || event.category === category)
+        return (selectedFrame === null || event.frame === selectedFrame) && (!search || text.includes(search)) && (category === 'all' || event.category === category)
       })
       .slice(-200)
       .reverse()
     query<HTMLElement>('.command-list').innerHTML = events.length
       ? events.map((event) => `<button class="command-row ${event === selectedEvent ? 'active' : ''}" data-event="${event.index}"><span>#${event.index}</span><strong>${event.name}</strong><span>${escapeHtml(event.args.map(formatArgument).join(', '))}</span><span>${event.duration.toFixed(3)}ms</span></button>`).join('')
       : '<div class="empty">没有匹配的绘制调用</div>'
+  }
+
+  function renderReplay(): void {
+    const inspector = currentInspector()
+    const preview = query<HTMLElement>('.replay-preview')
+    preview.hidden = selectedFrame === null
+    if (selectedFrame === null || !inspector) {
+      return
+    }
+    if (!inspector.getFrame(selectedFrame)) {
+      query<HTMLElement>('.replay-label').textContent = '该帧已过期，请重新选择'
+      preview.hidden = true
+      return
+    }
+    const result = inspector.replayFrame(selectedFrame, query<HTMLCanvasElement>('.replay-preview canvas'), replayThrough)
+    query<HTMLElement>('.replay-label').textContent = `Frame #${selectedFrame} · ${result.applied} calls`
+    query<HTMLElement>('.replay-warning').textContent = result.warnings.join(' ')
   }
 
   function renderProfiler(): void {
@@ -166,7 +196,7 @@ export function mountCanvasDevtools(options: MountPanelOptions): CanvasDevtoolsP
     query<HTMLElement>('.metrics').innerHTML = [
       ['平均 FPS', frames.length ? averageFps.toFixed(0) : '—', `${frames.length} frames`],
       ['平均帧耗时', frames.length ? `${averageDuration.toFixed(2)} ms` : '—', '16.7 ms budget'],
-      ['绘制调用', inspector?.events.length ?? 0, `${frames.length ? ((inspector?.events.length ?? 0) / frames.length).toFixed(1) : 0} / frame`],
+      ['绘制调用', inspector?.events.length ?? 0, `${frames.length ? (frames.reduce((sum, frame) => sum + frame.callCount, 0) / frames.length).toFixed(1) : 0} / frame`],
       ['慢帧', slow.length, '> 16.7 ms']
     ]
       .map(([label, value, note]) => `<article class="metric"><span>${label}</span><strong>${value}</strong><small>${note}</small></article>`)
@@ -243,6 +273,7 @@ export function mountCanvasDevtools(options: MountPanelOptions): CanvasDevtoolsP
     renderSidebar()
     renderInspector()
     renderCommands()
+    renderReplay()
     renderProfiler()
     renderDetails()
     renderPageOverlay()
@@ -254,11 +285,11 @@ export function mountCanvasDevtools(options: MountPanelOptions): CanvasDevtoolsP
   }
 
   function scheduleRender(): void {
-    if (renderQueued) {
+    if (renderQueued || destroyed || shell.classList.contains('closed')) {
       return
     }
     renderQueued = true
-    window.setTimeout(render, 16)
+    renderTimer = window.setTimeout(render, 50)
   }
 
   root.addEventListener('click', (event) => {
@@ -286,9 +317,22 @@ export function mountCanvasDevtools(options: MountPanelOptions): CanvasDevtoolsP
       }
       return
     }
+    const frameIndex = targetElement.dataset.frame
+    if (frameIndex != null) {
+      selectedFrame = Number(frameIndex)
+      replayThrough = Infinity
+      selectedEvent = null
+      query<HTMLButtonElement>('[data-view=render]').click()
+      render()
+      return
+    }
     const eventIndex = targetElement.dataset.event
     if (eventIndex != null) {
       selectedEvent = currentInspector()?.getEvent(Number(eventIndex)) ?? null
+      if (selectedFrame !== null && selectedEvent) {
+        replayThrough = selectedEvent.index
+        renderReplay()
+      }
       renderCommands()
       renderDetails()
       renderPageOverlay()
@@ -302,6 +346,24 @@ export function mountCanvasDevtools(options: MountPanelOptions): CanvasDevtoolsP
       return
     }
     switch (targetElement.dataset.action) {
+      case 'replay-live':
+        selectedFrame = null
+        render()
+        break
+      case 'replay-all':
+        replayThrough = Infinity
+        renderReplay()
+        break
+      case 'replay-prev':
+      case 'replay-next': {
+        const commands = currentInspector()?.events.filter((item) => item.frame === selectedFrame) ?? []
+        const index = replayThrough === Infinity ? commands.length - 1 : commands.findIndex((item) => item.index === replayThrough)
+        const next = targetElement.dataset.action === 'replay-next' ? Math.min(commands.length - 1, index + 1) : Math.max(-1, index - 1)
+        replayThrough = commands[next]?.index ?? -1
+        selectedEvent = commands[next] ?? null
+        render()
+        break
+      }
       case 'pause':
         paused = !paused
         for (const inspector of options.devtools.inspectors.values()) {
@@ -313,6 +375,7 @@ export function mountCanvasDevtools(options: MountPanelOptions): CanvasDevtoolsP
       case 'clear':
         currentInspector()?.clear()
         selectedEvent = null
+        selectedFrame = null
         render()
         break
       case 'close':
@@ -342,6 +405,8 @@ export function mountCanvasDevtools(options: MountPanelOptions): CanvasDevtoolsP
       pageOverlay.hidden = true
     },
     destroy: () => {
+      destroyed = true
+      window.clearTimeout(renderTimer)
       options.devtools.removeEventListener('update', updateListener)
       host.remove()
     },
