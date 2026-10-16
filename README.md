@@ -5,7 +5,7 @@
 ## 安装
 
 ```bash
-npm install canvas-inspector --save-dev
+pnpm add -D canvas-inspector
 ```
 
 工具应该只在开发环境加载，并且要在业务代码第一次调用 `canvas.getContext("2d")` 之前安装。
@@ -94,8 +94,8 @@ console.table(inspector.getHotspots());
 ## 本地开发
 
 ```bash
-npm install
-npm run dev
+pnpm install
+pnpm dev
 ```
 
 打开 `http://localhost:4173`。示例业务是一个持续刷新的 K 线 Canvas，调试面板由公开 API 挂载，而不是示例页面的一部分。
@@ -103,10 +103,13 @@ npm run dev
 示例页面只用于开发调试，不参与生产构建。`dev` 和 `build` 共用 `vite.config.ts`：开发命令以 `examples` 为站点根目录，构建命令只输出 npm 库到 `dist`。
 
 ```bash
-npm run typecheck
-npm run build
-npm pack --dry-run
+pnpm check
+pnpm typecheck
+pnpm build
+pnpm pack
 ```
+
+项目使用 pnpm（版本由 `package.json` 的 `packageManager` 字段固定）。Biome 负责代码格式和静态检查；运行 `pnpm check:fix` 自动修复可修复的问题，或运行 `pnpm format` 只格式化代码。
 
 ## 当前限制
 

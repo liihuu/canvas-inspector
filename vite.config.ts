@@ -10,17 +10,19 @@ export default defineConfig(({ command }) => {
   }
 
   return {
-    plugins: [{
-      name: "canvas-devtools-panel-css",
-      apply: "build",
-      buildStart() {
-        this.emitFile({
-          type: "asset",
-          fileName: "panel.css",
-          source: readFileSync(new URL("./src/panel.css", import.meta.url), "utf8"),
-        });
+    plugins: [
+      {
+        name: "canvas-devtools-panel-css",
+        apply: "build",
+        buildStart() {
+          this.emitFile({
+            type: "asset",
+            fileName: "panel.css",
+            source: readFileSync(new URL("./src/panel.css", import.meta.url), "utf8"),
+          });
+        },
       },
-    }],
+    ],
     build: {
       lib: {
         entry: {

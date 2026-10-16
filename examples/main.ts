@@ -12,13 +12,25 @@ const canvasContext = canvas.getContext("2d");
 if (!canvasContext) throw new Error("Canvas 2D is not supported");
 const context: CanvasRenderingContext2D = canvasContext;
 
-interface Candle { open: number; close: number; high: number; low: number; volume: number }
+interface Candle {
+  open: number;
+  close: number;
+  high: number;
+  low: number;
+  volume: number;
+}
 
 const candles: Candle[] = Array.from({ length: 52 }, (_, index) => {
   const base = 104 + Math.sin(index * 0.42) * 9 + index * 0.16;
   const open = base + Math.sin(index * 1.7) * 3;
   const close = base + Math.cos(index * 1.13) * 4;
-  return { open, close, high: Math.max(open, close) + 2 + index % 4, low: Math.min(open, close) - 2 - (index + 2) % 3, volume: 20 + index * 17 % 68 };
+  return {
+    open,
+    close,
+    high: Math.max(open, close) + 2 + (index % 4),
+    low: Math.min(open, close) - 2 - ((index + 2) % 3),
+    volume: 20 + ((index * 17) % 68),
+  };
 });
 
 let frame = 0;
@@ -34,10 +46,13 @@ function draw(): void {
   const volumeTop = 520;
   const bottom = 602;
   const drift = Math.sin(frame / 35) * 2.4;
-  const visible = candles.map((item, index) => index === candles.length - 1 ? { ...item, close: item.close + drift } : item);
+  const visible = candles.map((item, index) =>
+    index === candles.length - 1 ? { ...item, close: item.close + drift } : item,
+  );
   const minimum = Math.min(...visible.map((item) => item.low)) - 3;
   const maximum = Math.max(...visible.map((item) => item.high)) + 3;
-  const y = (price: number): number => priceBottom - (price - minimum) / (maximum - minimum) * (priceBottom - top);
+  const y = (price: number): number =>
+    priceBottom - ((price - minimum) / (maximum - minimum)) * (priceBottom - top);
   const step = (width - left - right) / visible.length;
 
   context.clearRect(0, 0, width, height);
@@ -49,15 +64,19 @@ function draw(): void {
   context.font = "12px ui-monospace, monospace";
   context.setLineDash([3, 5]);
   for (let index = 0; index <= 6; index += 1) {
-    const rowY = top + (priceBottom - top) / 6 * index;
+    const rowY = top + ((priceBottom - top) / 6) * index;
     context.beginPath();
     context.moveTo(left, rowY);
     context.lineTo(width - right, rowY);
     context.stroke();
-    context.fillText((maximum - (maximum - minimum) / 6 * index).toFixed(2), width - right + 12, rowY + 4);
+    context.fillText(
+      (maximum - ((maximum - minimum) / 6) * index).toFixed(2),
+      width - right + 12,
+      rowY + 4,
+    );
   }
   for (let index = 0; index <= 8; index += 1) {
-    const columnX = left + (width - left - right) / 8 * index;
+    const columnX = left + ((width - left - right) / 8) * index;
     context.beginPath();
     context.moveTo(columnX, top);
     context.lineTo(columnX, bottom);
@@ -78,7 +97,7 @@ function draw(): void {
     const bodyBottom = y(Math.min(item.open, item.close));
     context.fillRect(x - step * 0.3, bodyTop, step * 0.6, Math.max(2, bodyBottom - bodyTop));
     context.globalAlpha = 0.34;
-    const volumeHeight = item.volume / 90 * (bottom - volumeTop);
+    const volumeHeight = (item.volume / 90) * (bottom - volumeTop);
     context.fillRect(x - step * 0.3, bottom - volumeHeight, step * 0.6, volumeHeight);
     context.globalAlpha = 1;
   });

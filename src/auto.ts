@@ -4,6 +4,9 @@ import { installCanvasDevtools } from "./registry";
 const devtools = installCanvasDevtools();
 
 if (document.body) mountCanvasDevtools({ devtools });
-else window.addEventListener("DOMContentLoaded", () => mountCanvasDevtools({ devtools }), { once: true });
+else
+  window.addEventListener("DOMContentLoaded", () => mountCanvasDevtools({ devtools }), {
+    once: true,
+  });
 
 export default devtools;

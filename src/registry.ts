@@ -39,7 +39,8 @@ export class CanvasDevtoolsRegistry extends EventTarget {
   uninstall(): void {
     if (!this.installed) return;
     if (this.originalGetContext) HTMLCanvasElement.prototype.getContext = this.originalGetContext;
-    if (this.originalRequestAnimationFrame) window.requestAnimationFrame = this.originalRequestAnimationFrame;
+    if (this.originalRequestAnimationFrame)
+      window.requestAnimationFrame = this.originalRequestAnimationFrame;
     this.observer?.disconnect();
     if (this.updateTimer !== null) window.clearTimeout(this.updateTimer);
     for (const inspector of this.inspectors.values()) inspector.stop();
@@ -57,8 +58,10 @@ export class CanvasDevtoolsRegistry extends EventTarget {
   attach(canvas: HTMLCanvasElement, context?: CanvasRenderingContext2D): CanvasInspector {
     const existing = this.inspectors.get(canvas);
     if (existing) return existing;
-    const rawContext = context ?? this.originalGetContext?.call(canvas, "2d", this.options.contextAttributes);
-    if (!(rawContext instanceof CanvasRenderingContext2D)) throw new Error("Unable to attach Canvas 2D inspector");
+    const rawContext =
+      context ?? this.originalGetContext?.call(canvas, "2d", this.options.contextAttributes);
+    if (!(rawContext instanceof CanvasRenderingContext2D))
+      throw new Error("Unable to attach Canvas 2D inspector");
     const inspector = new CanvasInspector(canvas, {
       ...this.options,
       context: rawContext,
@@ -87,13 +90,18 @@ export class CanvasDevtoolsRegistry extends EventTarget {
     const registry = this;
     this.originalGetContext = HTMLCanvasElement.prototype.getContext;
     const original = this.originalGetContext;
-    HTMLCanvasElement.prototype.getContext = function getContext(this: HTMLCanvasElement,
+    HTMLCanvasElement.prototype.getContext = function getContext(
+      this: HTMLCanvasElement,
       contextId: string,
       options?: unknown,
     ): unknown {
       const context = original.call(this, contextId as never, options as never) as unknown;
       this.dataset.canvasContext = contextId;
-      if (contextId === "2d" && context instanceof CanvasRenderingContext2D && !this.hasAttribute("data-canvas-devtools-internal")) {
+      if (
+        contextId === "2d" &&
+        context instanceof CanvasRenderingContext2D &&
+        !this.hasAttribute("data-canvas-devtools-internal")
+      ) {
         return registry.attach(this, context).context;
       }
       return context;
@@ -101,18 +109,20 @@ export class CanvasDevtoolsRegistry extends EventTarget {
   }
 
   private patchAnimationFrame(): void {
-    const registry = this;
     this.originalRequestAnimationFrame = window.requestAnimationFrame.bind(window);
     const original = this.originalRequestAnimationFrame;
-    window.requestAnimationFrame = (callback: FrameRequestCallback): number => original((time) => {
-      const inspectors = [...registry.inspectors.values()].filter((inspector) => inspector.enabled && !inspector.paused);
-      for (const inspector of inspectors) inspector.beginFrame("requestAnimationFrame");
-      try {
-        callback(time);
-      } finally {
-        for (const inspector of inspectors) inspector.endFrame();
-      }
-    });
+    window.requestAnimationFrame = (callback: FrameRequestCallback): number =>
+      original((time) => {
+        const inspectors = [...this.inspectors.values()].filter(
+          (inspector) => inspector.enabled && !inspector.paused,
+        );
+        for (const inspector of inspectors) inspector.beginFrame("requestAnimationFrame");
+        try {
+          callback(time);
+        } finally {
+          for (const inspector of inspectors) inspector.endFrame();
+        }
+      });
   }
 
   private observeDocument(): void {
@@ -120,7 +130,11 @@ export class CanvasDevtoolsRegistry extends EventTarget {
       let changed = false;
       for (const mutation of mutations) {
         for (const node of mutation.addedNodes) {
-          if (node instanceof HTMLCanvasElement || (node instanceof Element && node.querySelector("canvas"))) changed = true;
+          if (
+            node instanceof HTMLCanvasElement ||
+            (node instanceof Element && node.querySelector("canvas"))
+          )
+            changed = true;
         }
         for (const node of mutation.removedNodes) {
           if (node instanceof HTMLCanvasElement) {

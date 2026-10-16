@@ -2,12 +2,16 @@
   "name": "canvas-inspector",
   "version": "0.2.0",
   "type": "module",
+  "packageManager": "pnpm@12.4.1",
   "description": "A zero-dependency Canvas 2D draw-call inspector.",
   "scripts": {
     "dev": "vite",
-    "build": "vite build && npm run types",
+    "check": "biome check .",
+    "check:fix": "biome check --write .",
+    "format": "biome format --write .",
     "types": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json",
+    "build": "pnpm run types && pnpm run check && vite build",
     "test": "node --test"
   },
   "main": "./dist/index.js",
@@ -40,6 +44,7 @@
   ],
   "license": "MIT",
   "devDependencies": {
+    "@biomejs/biome": "^2.5.15",
     "@types/node": "^26.6.5",
     "typescript": "latest",
     "vite": "^8.3.4"
